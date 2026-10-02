@@ -1,0 +1,15 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      # Unit tests only. Tests marked ml run the pipeline's models and are skipped here.
+      - run: pytest -m "not ml"

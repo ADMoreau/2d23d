@@ -1,0 +1,25 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# Pipeline output
+/work/
+/*.glb
+
+# Downloaded model checkpoints (SAM 3D Body's own instructions put them here). Never commit these.
+/checkpoints/
+
+# Clips and model weights only go in with their license next to them:
+# git add -f clip.mp4 clip.LICENSE.txt
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx

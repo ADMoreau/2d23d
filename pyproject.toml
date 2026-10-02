@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "2d23d"
+version = "0.1.0.dev0"
+description = "Turn single-camera video of people playing a sport into an animated 3D scene for AR/VR."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "opencv-python",  # not the headless build: `trackers` needs this one, and two OpenCVs clash
+]
+
+[project.optional-dependencies]
+# The model stages. Brings in torch; on a CPU-only machine install the CPU build of torch first (see README).
+ml = [
+    "rfdetr>=1.11",
+    "trackers>=2.6,<3",
+    # SAM 3D Body and MoGe-2 aren't pip-installable: the bodies stage fetches their pinned code on first use.
+    # These are the libraries that code needs.
+    "braceexpand",
+    "einops",
+    "huggingface_hub",
+    "omegaconf",
+    "pytorch-lightning",
+    "roma",
+    "scipy",
+    "timm",
+    "utils3d_moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@62f09d58509485564e24d5d9f6aac9ee9ebc0c37",
+    "wandb",  # imported by SAM 3D Body's model class, never used
+    "yacs",
+]
+dev = ["pytest"]
+
+[project.scripts]
+2d23d = "twod23d.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/twod23d"]
+
+[tool.hatch.metadata]
+allow-direct-references = true  # for utils3d_moge, which is only on GitHub
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ml: runs the pipeline's ML models; CI skips these"]

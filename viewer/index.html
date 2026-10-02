@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2d23d viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1e2227; color: #eee; font: 14px system-ui, sans-serif; }
+  #overlay { position: fixed; inset: 0; pointer-events: none; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; align-items: center;
+         padding: 10px 14px; background: rgba(0, 0, 0, 0.55); pointer-events: auto; }
+  #scrub { flex: 1; }
+  #time { font-variant-numeric: tabular-nums; min-width: 11ch; text-align: right; }
+  button, label[for] { background: #3b4450; color: #eee; border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  #file { display: none; }
+  #message { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 16px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="overlay">
+  <div id="message">Loading…</div>
+  <div id="bar">
+    <button id="play">Pause</button>
+    <input id="scrub" type="range" min="0" max="1" step="0.01" value="0">
+    <span id="time">0.0 / 0.0 s</span>
+    <label for="file">Open .glb</label><input id="file" type="file" accept=".glb">
+  </div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRButton } from "three/addons/webxr/VRButton.js";
+import { ARButton } from "three/addons/webxr/ARButton.js";
+
+const TABLETOP_SIZE = 0.8; // meters: how wide the scene gets when placed on a table in AR
+const $ = (id) => document.getElementById(id);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.xr.enabled = true;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const background = new THREE.Color(0x1e2227);
+scene.background = background;
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 300);
+camera.position.set(10, 8, 14);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+// People's colors come from the video, its light included: an even light shows them about as filmed,
+// and a softer sun adds their shape and shadows
+scene.add(new THREE.AmbientLight(0xffffff, 2.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(6, 14, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0005; // without these, bodies shade themselves in stripes
+sun.shadow.normalBias = 0.02;
+Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 60 });
+scene.add(sun);
+
+// Everything from the file goes in `world`, so VR and AR can move and shrink it as one piece
+const world = new THREE.Group();
+scene.add(world);
+let mixer = null, action = null, playing = true, videoCamera = null, floorSize = 20, backdrop = null;
+const videoSpot = new THREE.Vector3(); // where the video's camera stood
+const timer = new THREE.Timer();
+const loader = new GLTFLoader();
+const params = new URLSearchParams(window.location.search);
+
+function show(gltf) {
+  world.clear();
+  world.add(gltf.scene);
+  gltf.scene.updateMatrixWorld(true);
+  const painted = [];
+  gltf.scene.traverse((object) => {
+    if (!object.isMesh) return;
+    object.receiveShadow = true;
+    object.castShadow = object.isSkinnedMesh; // people cast shadows on the floor
+    if (object.isSkinnedMesh) object.frustumCulled = false; // its bounds are those of the unposed body
+    const area = object.userData.play_area; // [x0, z0, x1, z1] around where people go
+    if (area) floorSize = Math.ceil(Math.max(area[2] - area[0], area[3] - area[1]));
+    if (object.name === "floor") { // a faint 1 m grid on it, for a sense of distance
+      const box = new THREE.Box3().setFromObject(object);
+      if (!area) floorSize = Math.ceil(Math.max(box.max.x - box.min.x, box.max.z - box.min.z));
+      const grid = new THREE.GridHelper(floorSize, floorSize, 0xc8ced6, 0xc8ced6);
+      grid.material.transparent = true;
+      grid.material.opacity = 0.3;
+      box.getCenter(grid.position).setY(0.002);
+      world.add(grid);
+    }
+    if (object.name === "scene") painted.push(object);
+  });
+  backdrop = gltf.scene.getObjectByName("backdrop") || null; // the video's far background, behind the scene
+  if (backdrop) {
+    backdrop.material = backdrop.material.clone(); // to fade it alone
+    backdrop.material.transparent = true;
+  }
+  // The scene is painted from the video, so lights don't change it; a see-through copy shows the people's shadows on it
+  for (const object of painted) {
+    if (object.material.map) object.material.map.anisotropy = renderer.capabilities.getMaxAnisotropy(); // sharp far floor
+    object.geometry.computeVertexNormals();
+    const shadows = new THREE.ShadowMaterial({ opacity: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    const catcher = new THREE.Mesh(object.geometry, shadows);
+    catcher.receiveShadow = true;
+    object.add(catcher);
+  }
+  videoCamera = gltf.cameras[0] || null;
+  if (videoCamera) { // start from the video's point of view, orbiting where it looks at the floor
+    videoCamera.getWorldPosition(videoSpot);
+    camera.position.copy(videoSpot);
+    videoCamera.getWorldQuaternion(camera.quaternion);
+    camera.fov = videoCamera.fov;
+    camera.updateProjectionMatrix();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const distance = forward.y < -0.01 ? Math.min(-camera.position.y / forward.y, 30) : 10;
+    controls.target.copy(camera.position).addScaledVector(forward, distance);
+    controls.update();
+  }
+  mixer = new THREE.AnimationMixer(gltf.scene);
+  const clip = gltf.animations[0];
+  action = clip ? mixer.clipAction(clip).play() : null;
+  if (action && params.has("t")) { // ?t=12.5 opens at 12.5 seconds
+    action.time = Number(params.get("t")) || 0;
+    mixer.update(0);
+  }
+  $("scrub").max = clip ? clip.duration : 0;
+  $("message").textContent = clip ? "" : "This file has no animation.";
+}
+
+function fail(what) {
+  return () => { $("message").textContent = `Couldn't open ${what}. Open a .glb file from 2d23d instead.`; };
+}
+
+function openFile(file) {
+  $("message").textContent = `Opening ${file.name}…`;
+  file.arrayBuffer().then((buffer) => loader.parse(buffer, "", show, fail(file.name)));
+}
+
+const source = params.get("src") || "scene.glb";
+loader.load(source, show, (event) => {
+  if (event.total) $("message").textContent = `Loading ${Math.round((100 * event.loaded) / event.total)}%`;
+}, fail(source));
+
+$("file").addEventListener("change", () => $("file").files[0] && openFile($("file").files[0]));
+window.addEventListener("dragover", (event) => event.preventDefault());
+window.addEventListener("drop", (event) => { event.preventDefault(); if (event.dataTransfer.files[0]) openFile(event.dataTransfer.files[0]); });
+
+$("play").addEventListener("click", () => { playing = !playing; $("play").textContent = playing ? "Pause" : "Play"; });
+$("scrub").addEventListener("input", () => {
+  if (!action) return;
+  action.time = Number($("scrub").value);
+  mixer.update(0);
+});
+
+// VR: stand where the video's camera stood, facing the way it looked, at real scale
+// AR: find a table with hit testing, then tap to put the scene on it, shrunk to TABLETOP_SIZE
+let mode = null, hitSource = null, placed = false;
+const reticle = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+reticle.matrixAutoUpdate = false;
+reticle.visible = false;
+scene.add(reticle);
+
+const vrButton = VRButton.createButton(renderer);
+const arButton = ARButton.createButton(renderer, { requiredFeatures: ["hit-test"], optionalFeatures: ["dom-overlay"], domOverlay: { root: $("overlay") } });
+vrButton.addEventListener("click", () => { mode = "vr"; }, true);
+arButton.addEventListener("click", () => { mode = "ar"; }, true);
+document.body.append(vrButton, arButton);
+arButton.style.bottom = "90px"; // above the VR button, both above the playback bar
+vrButton.style.bottom = "60px";
+
+renderer.xr.addEventListener("sessionstart", async () => {
+  const session = renderer.xr.getSession();
+  if (mode === "ar") {
+    scene.background = null;
+    world.visible = false;
+    placed = false;
+    hitSource = await session.requestHitTestSource({ space: await session.requestReferenceSpace("viewer") });
+    if (backdrop) backdrop.visible = false; // out of place on a table
+    const controller = renderer.xr.getController(0);
+    controller.addEventListener("select", () => {
+      if (!reticle.visible) return;
+      reticle.matrix.decompose(world.position, world.quaternion, new THREE.Vector3());
+      world.scale.setScalar(TABLETOP_SIZE / floorSize);
+      world.visible = placed = true;
+    });
+    scene.add(controller);
+  } else if (videoCamera) {
+    if (backdrop) {
+      backdrop.visible = true;
+      backdrop.material.opacity = 1;
+    }
+    const spot = videoCamera.getWorldPosition(new THREE.Vector3());
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(videoCamera.getWorldQuaternion(new THREE.Quaternion()));
+    world.rotation.y = Math.atan2(forward.x, -forward.z);
+    world.position.set(-spot.x, 0, -spot.z).applyAxisAngle(new THREE.Vector3(0, 1, 0), world.rotation.y);
+  }
+});
+renderer.xr.addEventListener("sessionend", () => {
+  scene.background = background;
+  world.position.set(0, 0, 0);
+  world.rotation.set(0, 0, 0);
+  world.scale.setScalar(1);
+  world.visible = true;
+  reticle.visible = false;
+  hitSource = null;
+  mode = null;
+});
+
+renderer.setAnimationLoop((time, frame) => {
+  timer.update(time);
+  if (mixer && playing) mixer.update(timer.getDelta());
+  if (action) {
+    const t = action.time % action.getClip().duration;
+    $("scrub").value = t;
+    $("time").textContent = `${t.toFixed(1)} / ${action.getClip().duration.toFixed(1)} s`;
+  }
+  if (frame && hitSource && !placed) {
+    const hits = frame.getHitTestResults(hitSource);
+    reticle.visible = hits.length > 0;
+    if (hits.length) reticle.matrix.fromArray(hits[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix);
+  }
+  if (backdrop && !renderer.xr.isPresenting) { // it only looks right from near where the video was shot
+    backdrop.material.opacity = THREE.MathUtils.clamp(1 - (camera.position.distanceTo(videoSpot) - 2) / 4, 0, 1);
+    backdrop.visible = backdrop.material.opacity > 0;
+  }
+  if (!renderer.xr.isPresenting) controls.update();
+  renderer.render(scene, camera);
+});
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

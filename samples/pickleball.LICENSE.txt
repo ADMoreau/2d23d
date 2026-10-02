@@ -1,0 +1,11 @@
+pickleball.mp4
+
+Cut from "ELEVENO Pickleball Winter Classic Pickleball Tournament-Mens Doubles 4.0+ Final"
+by New England Pickleball LIVE (https://www.youtube.com/channel/UCGUcn_i-b7IY9u8vU1xSfbQ)
+Source: https://www.youtube.com/watch?v=C1beEeBWmyw
+
+License: Creative Commons Attribution 3.0 (CC BY 3.0)
+https://creativecommons.org/licenses/by/3.0/
+
+Changes: cut to 5:22-5:52 of the source (30 s from one fixed camera), converted from
+60 to 30 fps, audio removed.
