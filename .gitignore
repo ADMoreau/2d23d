@@ -4,6 +4,7 @@ build/
 dist/
 .venv/
 .pytest_cache/
+CLAUDE.md
 
 # Pipeline output
 /work/
