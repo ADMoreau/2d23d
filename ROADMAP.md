@@ -40,6 +40,7 @@ Turn single-camera video of people playing a sport into an animated 3D scene you
 - **Equipment.** What people hold and swing, such as paddles, rackets, bats and sticks: a simple model of the sport's implement, held in the hand and turned to match the video. Leave it out when the video doesn't show it clearly.
 - **Moving cameras.** Camera tracking or a court/field fit, packaged as sport-specific "domain packs", so broadcast footage works. Estimate the camera's path with SLAM while masking out people, as TRAM and SLAHMR do, then place bodies along it. A moving camera also lets the scene be reconstructed in full 3D: a mesh for surfaces to stand on, or a Gaussian splat for looks. Splats need their own renderer and get heavy on phones and headsets. Check licenses: the original Gaussian splatting code and DUSt3R/MASt3R are non-commercial, while gsplat (Apache-2.0) and COLMAP (BSD) are permissive.
 - **Ball and physics.** Only if the scene looks wrong without them.
+- **Blender.** Everything should open in Blender for editing: animated bodies, their colors and the scene. Blender's glTF importer may already handle the GLB; check that first, and only add another export if it falls short.
 - **Formal evaluation.** Benchmarks like WorldPose or SoccerNet-GSR, if accuracy numbers become useful.
 
 ## Test footage

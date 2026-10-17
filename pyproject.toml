@@ -33,6 +33,9 @@ ml = [
     "utils3d_moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@62f09d58509485564e24d5d9f6aac9ee9ebc0c37",
     "wandb",  # imported by SAM 3D Body's model class, never used
     "yacs",
+    # Momentum, the solver library MHR is built on, for the smooth stage. Its wheels start at Python 3.12;
+    # without it the stage leaves the bodies as they are.
+    "pymomentum-core>=0.1.114; python_version >= '3.12'",
 ]
 dev = ["pytest"]
 

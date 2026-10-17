@@ -23,6 +23,7 @@ Open-source tool that turns single-camera video of people playing a sport into a
 
 - Detection: RF-DETR (Apache-2.0). Tracking: OC-SORT from Roboflow's `trackers` library (Apache-2.0). `supervision`'s ByteTrack is deprecated, and OC-SORT kept all four IDs on the sample where ByteTrack split one.
 - 3D bodies: SAM 3D Body (MHR body model), with a field-of-view estimator such as MoGe-2.
+- Smoothing: Meta's Momentum (MIT) fits each person's whole track at once: joints near SAM 3D Body's, little acceleration, shared body proportions. Weight 0.1, chosen by eye.
 - Floor: fit one plane to everyone's feet across the whole video, rotate it flat, snap each body's lowest point onto it, then smooth.
 - Scene: the video with its people taken out, turned into a mesh by MoGe-2, scaled to the bodies at foot contacts, its floor laid on the fitted one, painted with the video. A plain floor when it doesn't fit the bodies.
 - Colors: each body vertex gets the median video color of the frames where it faced the camera, uncovered.

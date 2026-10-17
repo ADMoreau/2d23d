@@ -10,7 +10,7 @@ from twod23d.stages.floor import FEET, fit_plane, smoothed_paths, to_world, worl
 
 
 def work_folder(tmp_path: Path, vertices: np.ndarray, keypoints: np.ndarray, frames: np.ndarray, tracks: np.ndarray) -> Context:
-    """A work folder with ingest and bodies output, as the floor stage expects, and a context for it."""
+    """A work folder with ingest, bodies and smooth output, as the floor stage expects, and a context for it."""
     (tmp_path / "ingest" / "frames").mkdir(parents=True)
     for i in range(3):
         cv2.imwrite(str(tmp_path / "ingest" / "frames" / f"{i:06d}.jpg"), np.zeros((120, 160, 3), np.uint8))
@@ -18,7 +18,8 @@ def work_folder(tmp_path: Path, vertices: np.ndarray, keypoints: np.ndarray, fra
     (tmp_path / "ingest" / "meta.json").write_text(json.dumps(meta))
     (tmp_path / "bodies").mkdir()
     (tmp_path / "bodies" / "camera.json").write_text(json.dumps({"fx": 100.0, "fy": 100.0, "cx": 80.0, "cy": 60.0}))
-    np.savez(tmp_path / "bodies" / "bodies.npz", frame=frames, track_id=tracks, vertices=vertices, keypoints=keypoints, faces=np.zeros((0, 3), np.int32))
+    (tmp_path / "smooth").mkdir()
+    np.savez(tmp_path / "smooth" / "bodies.npz", frame=frames, track_id=tracks, vertices=vertices, keypoints=keypoints, faces=np.zeros((0, 3), np.int32))
     return Context(video=Path("clip.mp4"), work=tmp_path, settings=Settings(), device="cpu")
 
 

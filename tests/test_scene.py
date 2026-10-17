@@ -82,7 +82,8 @@ def test_scene_stage_without_people_makes_no_scene(tmp_path):
     (tmp_path / "track" / "tracks.json").write_text(json.dumps({"detections": []}))
     (tmp_path / "bodies").mkdir()
     (tmp_path / "bodies" / "camera.json").write_text(json.dumps({"fx": 100.0, "fy": 100.0, "cx": 80.0, "cy": 60.0}))
-    np.savez(tmp_path / "bodies" / "bodies.npz", frame=np.zeros(0, int), track_id=np.zeros(0, int), keypoints=np.zeros((0, 70, 3)))
+    (tmp_path / "smooth").mkdir()
+    np.savez(tmp_path / "smooth" / "bodies.npz", frame=np.zeros(0, int), track_id=np.zeros(0, int), keypoints=np.zeros((0, 70, 3)))
     (tmp_path / "floor").mkdir()
     (tmp_path / "floor" / "floor.json").write_text(json.dumps({"camera_to_world": LEVEL_CAMERA.tolist()}))
     out = tmp_path / "scene.tmp"

@@ -70,7 +70,7 @@ def run(ctx: Context, out: Path) -> None:
     image = background(np.stack([read_frame(ctx.work, int(i)) for i in picks]), [boxes[int(i)] for i in picks])
     cv2.imwrite(str(out / "background.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-    with np.load(ctx.work / "bodies" / "bodies.npz") as f:
+    with np.load(ctx.work / "smooth" / "bodies.npz") as f:
         feet = f["keypoints"][:, FEET].reshape(-1, 3).astype(np.float64)
     feet = feet[np.abs(to_world(feet, camera_to_world)[:, 1]) < ON_FLOOR]  # touching the fitted floor
     report = {"used": False}

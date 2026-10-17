@@ -4,7 +4,7 @@ Fits one plane to everyone's heels and toes across the whole video, then moves t
 meters, y up, floor at y = 0, x along the camera's right, and the origin under the middle of where people
 stand. Each body's lowest point is put on the floor, and each person's path is smoothed.
 Output:
-- bodies.npz like bodies/bodies.npz, but in world coordinates, plus floor_gap (N,): how far above the floor
+- bodies.npz like smooth/bodies.npz, but in world coordinates, plus floor_gap (N,): how far above the floor
   each body's lowest point was before it was snapped down (negative: below it)
 - floor.json: camera_to_world (4x4), and the camera's height above the floor and downward tilt
 - debug.mp4 with a 1 m floor grid and each body's contact with the floor drawn over the frames
@@ -34,7 +34,7 @@ SMOOTH_SECONDS = 0.2  # each person's position on the floor is averaged over thi
 
 
 def run(ctx: Context, out: Path) -> None:
-    with np.load(ctx.work / "bodies" / "bodies.npz") as f:
+    with np.load(ctx.work / "smooth" / "bodies.npz") as f:
         bodies = dict(f)
     camera = json.loads((ctx.work / "bodies" / "camera.json").read_text())
     fps = read_meta(ctx.work)["fps"]

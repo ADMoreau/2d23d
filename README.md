@@ -2,11 +2,11 @@
 
 Turn single-camera video of people playing a sport into an animated 3D scene you can walk around in AR/VR. Offline and fully automatic: one command takes a video and writes a GLB file, and a web viewer plays it in the browser, in VR, or on a table in AR.
 
-**Status:** v0.1, "Bodies on a floor", works end to end on the sample clip. Each person becomes an animated 3D body in their own colors from the video, standing in a 3D copy of the place painted with the video itself. It has only been tried on one clip so far, and v0.1 is done when it looks right on a few. See [ROADMAP.md](ROADMAP.md) for the plan.
+**Status:** v0.1, "Bodies on a floor", works end to end on the sample clip: each person becomes an animated 3D body in their own colors, standing in a 3D copy of the place painted with the video. v0.1 is done when it looks right on a few clips. See [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## Quickstart
 
-From a clone of this repo, with Python 3.11 or newer:
+From a clone of this repo, with Python 3.12 or newer. Python 3.11 works too, but skips the `smooth` stage.
 
 ```bash
 # CPU-only machine: get the CPU build of PyTorch first, which skips several GB of CUDA libraries
@@ -18,7 +18,13 @@ huggingface-cli login  # after requesting access at https://huggingface.co/faceb
 
 The sample is 30 seconds of a pickleball doubles final from one fixed camera ([CC BY 3.0](samples/pickleball.LICENSE.txt)). `--tiny` uses the first 3 seconds at 640 px with the smallest models and 3D bodies for every 10th frame, and takes about 4 minutes on a laptop CPU. It writes `pickleball-tiny.glb` and keeps each stage's output in `work/pickleball-tiny/`. To watch it, see [Viewer](#viewer). Tiny mode checks that everything is installed; its bodies and scene look rough, so judge quality from a full run.
 
-SAM 3D Body's weights are gated, so request access on Hugging Face once and log in with a Read token. The first run downloads about 3 GB: the person detector (400 MB, into `~/.roboflow/models`), SAM 3D Body (2.4 GB) and MoGe-2 (140 MB for `--tiny`, 1.3 GB otherwise) into `~/.cache/huggingface`, and SAM 3D Body's and MoGe's code (25 MB, into `~/.cache/2d23d`). If Hugging Face downloads crawl, `HF_HUB_DISABLE_XET=1` switches them to plain HTTP, which was 8 times faster on one connection.
+SAM 3D Body's weights are gated, so request access on Hugging Face once and log in with a Read token. The first run downloads about 3 GB:
+
+- the person detector (400 MB) into `~/.roboflow/models`
+- SAM 3D Body (2.4 GB) and MoGe-2 (140 MB for `--tiny`, 1.3 GB otherwise) into `~/.cache/huggingface`
+- SAM 3D Body's and MoGe's code (25 MB) and MHR's rig files (a 200 MB download) into `~/.cache/2d23d`
+
+If Hugging Face downloads crawl, `HF_HUB_DISABLE_XET=1` switches them to plain HTTP, which was 8 times faster on one connection.
 
 ## Full run
 
@@ -35,7 +41,7 @@ SAM 3D Body's weights are gated, so request access on Hugging Face once and log 
 | `--force [STAGE]` | rerun `STAGE` and every stage after it, or every stage if none is named |
 | `--device DEVICE` | `auto` (the default: CUDA if available, else CPU), `cpu`, `cuda` or `cuda:N` |
 
-The `bodies` stage is the slow one. On an 8-core laptop CPU it takes about 16 seconds per frame with four people: the 30-second sample (900 frames) took 4.4 hours. An NVIDIA GPU, such as Kaggle's free tier or a rented 24 GB GPU, is much faster. The other stages take seconds to minutes on a CPU. Finished stages are kept, so an interrupted run picks up where it stopped.
+The `bodies` stage is the slow one. On an 8-core laptop CPU it takes about 16 seconds per frame with four people: the 30-second sample (900 frames) took 4.4 hours. An NVIDIA GPU, such as Kaggle's free tier or a rented 24 GB GPU, is much faster. `smooth` took about 15 minutes on the sample, and the other stages take seconds to minutes. Finished stages are kept, so an interrupted run picks up where it stopped.
 
 The full sample makes a 17.5 MB GLB: the four players, in their colors, in a 3D copy of the hall.
 
@@ -55,6 +61,7 @@ The full sample makes a 17.5 MB GLB: the four players, in their colors, in a 3D 
 | `ingest` | reads the video's frames | `frames/`, `meta.json` |
 | `track` | finds people with RF-DETR and follows them with OC-SORT | `tracks.json`: a box and an ID per person per frame |
 | `bodies` | estimates each person's 3D body with SAM 3D Body, and the camera's field of view with MoGe-2 | `bodies.npz`: an MHR body per person per frame, `camera.json` |
+| `smooth` | steadies each person's motion over the whole video with Momentum, keeping joints near SAM 3D Body's while limiting their acceleration | `bodies.npz`, smoothed |
 | `floor` | fits one plane to everyone's feet, turns it flat, stands each body on it and smooths | `bodies.npz` in floor coordinates, `floor.json` with the camera's height and tilt |
 | `scene` | takes the people out of the video, turns what's left into a 3D mesh with MoGe-2, scales it to the bodies and lays its floor on the fitted one; skipped if it doesn't fit them | `background.jpg`, `scene.npz`: the mesh, `scene.json` |
 | `check` | drops bodies more than 25 cm off the floor or jumping more than 15 cm, and people left with under a second | `bodies.npz`, `report.json` saying what was dropped and why |
@@ -124,7 +131,8 @@ This project is under the [Apache License 2.0](LICENSE). Its dependencies:
 | [trackers](https://github.com/roboflow/trackers) | OC-SORT tracking | Apache-2.0 |
 | [supervision](https://github.com/roboflow/supervision) (via RF-DETR and trackers) | detection results | MIT |
 | [SAM 3D Body](https://github.com/facebookresearch/sam-3d-body) | 3D bodies | SAM License, see below |
-| [MHR](https://github.com/facebookresearch/MHR) | body model | Apache-2.0 |
+| [MHR](https://github.com/facebookresearch/MHR) | body model, and its rig files for smoothing (downloaded on first use) | Apache-2.0 |
+| [Momentum](https://github.com/facebookresearch/momentum) (`pymomentum-core`) | smoothing each person's motion | MIT |
 | [MoGe-2](https://github.com/microsoft/MoGe) | camera field of view and the scene's shape (code and weights) | MIT |
 | PyTorch Lightning, timm, yacs, huggingface_hub; roma, omegaconf, scipy; einops, braceexpand, wandb, utils3d-moge | libraries SAM 3D Body's and MoGe's code needs | Apache-2.0; BSD-3-Clause; MIT |
 | [three.js](https://github.com/mrdoob/three.js) | viewer, loaded from jsDelivr | MIT |
