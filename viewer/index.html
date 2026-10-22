@@ -73,6 +73,7 @@ const world = new THREE.Group();
 scene.add(world);
 let mixer = null, action = null, playing = true, videoCamera = null, floorSize = 20, backdrop = null;
 const videoSpot = new THREE.Vector3(); // where the video's camera stood
+const head = new THREE.Vector3(); // where a VR headset is, in the file's coordinates
 const timer = new THREE.Timer();
 const loader = new GLTFLoader();
 const params = new URLSearchParams(window.location.search);
@@ -195,10 +196,6 @@ renderer.xr.addEventListener("sessionstart", async () => {
     });
     scene.add(controller);
   } else if (videoCamera) {
-    if (backdrop) {
-      backdrop.visible = true;
-      backdrop.material.opacity = 1;
-    }
     const spot = videoCamera.getWorldPosition(new THREE.Vector3());
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(videoCamera.getWorldQuaternion(new THREE.Quaternion()));
     world.rotation.y = Math.atan2(forward.x, -forward.z);
@@ -229,8 +226,9 @@ renderer.setAnimationLoop((time, frame) => {
     reticle.visible = hits.length > 0;
     if (hits.length) reticle.matrix.fromArray(hits[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix);
   }
-  if (backdrop && !renderer.xr.isPresenting) { // it only looks right from near where the video was shot
-    backdrop.material.opacity = THREE.MathUtils.clamp(1 - (camera.position.distanceTo(videoSpot) - 2) / 4, 0, 1);
+  if (backdrop && mode !== "ar") { // it only looks right from near where the video was shot
+    const eye = renderer.xr.isPresenting ? world.worldToLocal(renderer.xr.getCamera().getWorldPosition(head)) : camera.position;
+    backdrop.material.opacity = THREE.MathUtils.clamp(1 - (eye.distanceTo(videoSpot) - 2) / 4, 0, 1);
     backdrop.visible = backdrop.material.opacity > 0;
   }
   if (!renderer.xr.isPresenting) controls.update();
