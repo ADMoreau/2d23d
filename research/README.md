@@ -1,10 +1,10 @@
 # Research: objects beyond the people
 
-Experiments toward the layers below the people in the scene hierarchy: objects the players directly interact with (paddles, the ball), pertinent objects (the net), and later the setting. These scripts aren't pipeline stages yet. They read a finished work folder from `2d23d run` and write their results to their own `run/` folders.
+Experiments toward the layers below the people in the scene hierarchy: objects the players directly interact with (paddles, the ball), pertinent objects (the net), and the setting. The pipeline design that came out of them is in `docs/hierarchy.md`. These scripts aren't pipeline stages yet. They read a finished work folder from `2d23d run` and write their results to their own `run/` folders.
 
 They were developed in `work/lab/` (git-ignored), which holds the venvs, the work folder (`work-smooth/`), the results and the logs. This folder is a copy of the code only: no weights, clips or results. To run them, copy them back into a lab folder that has `venv/` (Python 3.10: torch CPU, numpy, scipy, opencv, trimesh, scikit-image) and `work-smooth/`.
 
-All models used are permissively licensed: SAM 2.1 (Apache-2.0), Grounding DINO (Apache-2.0), RF-DETR (Apache-2.0), TripoSR (MIT). Heavy jobs run under `systemd-run` memory caps.
+All models used are permissively licensed: SAM 2.1 (Apache-2.0), Grounding DINO (Apache-2.0), RF-DETR (Apache-2.0), TripoSR (MIT), LaMa (Apache-2.0; `setting/` expects big-lama.pt in `models/lama/` from the simple-lama-inpainting v0.1.0 release). Heavy jobs run under `systemd-run` memory caps.
 
 ## Paddles: good enough
 
@@ -35,3 +35,24 @@ Superseded attempts kept for the record: `fit.py`, `fit2.py`, `fit3.py` (rigid g
 - Known issues:
   - It measures 6.24 m by 0.73 m, against about 6.7 m by 0.86 m in reality, so the scene may be 5–15% small.
   - The court lines behind the net are baked into its texture, along with an inpainting smudge.
+
+## Setting: good enough
+
+- **`setting/topdown.py` and `measure_lines.py`**: the floor from straight above, and its painted lines. The court comes out rectangular but 7–8% small, the same as the net. The bodies set the scale, and the design keeps it (no rescaling from known sizes).
+- **`setting/walls.py`**: wall and ceiling planes by RANSAC on the scene mesh. The long wall fits to 4.3 cm and runs within 0.9° of parallel to the court lines.
+- **`setting/overlay.py`**: on-screen graphics are sharp edges that never change. That finds the scoreboard, but also quiet painted floor.
+- **`setting/fill.py`**: LaMa fills the scoreboard and net, using the scoreboard mask from `net/net_mask.py` with the name "scoreboard".
+- **`setting/see_through.py`**: the floor behind the net, recovered through its holes; LaMa fills only its solid parts. `fill_floor.py` (filling in the top-down view) was a minor gain and isn't used.
+- **`setting/setting_build.py`**: the scene mesh with the net's stand-in geometry replaced by floor or wall, walls and ceiling snapped to their planes, and painted with the cleaned image.
+- **`setting/render.py`**: a quick check render. **`setting/assemble.py`**: the export with the new setting plus the net.
+- Known issues: a faint ghost of the net at its left end, a smudge where the wheels were, a blurry far floor, the far wall 6° off square.
+
+## Shadows: dropped for now
+
+- **`shadows/lights.py`**: light positions from people's shadows, by non-negative least squares over candidate lights on the ceiling. On held-out frames it explains 19% of the darkening, against 3–7% for random lights.
+- **`shadows/ball_shadow.py`**: the ball's shadow shows only near the floor.
+- Indoors, under many soft lights, the shadows are too faint to use. They may matter outdoors.
+
+## All layers together
+
+- `assemble/paddle_meshes.py` (lab venv), then `assemble/assemble_all.py` (repo venv): one GLB with the bodies, paddles, ball, net and cleaned setting.
