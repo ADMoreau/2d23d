@@ -25,7 +25,9 @@ Superseded attempts kept for the record: `fit.py`, `fit2.py`, `fit3.py` (rigid g
   - sizes the ball from the floor and the hands, and places it in depth by its size
   - fits the whole path at once with gravity, a floor constraint and smoothing
   - labels contacts: bounces, paddle hits, hands
+- Finding the ball in play (`ball3d.py` step 1): tracklets (Hungarian matching, constant velocity, size within 2×), then a chain of them that starts at a ball someone touches. Detections near a body count fully; a moving ball far from everyone counts a little and only directly continues the chain. Each hop must be possible at 40 m/s and costs more the faster it is. `linkplot.py` plots every candidate against the linked path.
 - Result: median reprojection 1.2 px, 13 bounces, 5 hits.
+- On other sports: soccer's top speed went from 67 m/s (jumping to other games' balls) to 16 m/s. On basketball the diameter comes out 23.9 cm (24 cm real), never assumed.
 - Known issues: the ball comes out 8.9 cm vs 7.4 cm real, and 48 contacts are unexplained, probably hidden hits and wall hits.
 
 ## Net: good enough
@@ -35,6 +37,30 @@ Superseded attempts kept for the record: `fit.py`, `fit2.py`, `fit3.py` (rigid g
 - Known issues:
   - It measures 6.24 m by 0.73 m, against about 6.7 m by 0.86 m in reality, so the scene may be 5–15% small.
   - The court lines behind the net are baked into its texture, along with an inpainting smudge.
+
+## Fixtures: which objects matter
+
+Tested on three clips (pickleball, pickup soccer, half-court basketball; the last two are CC BY clips kept in the lab, not here).
+- **`fixtures/vlm_names.py`**: Qwen3.5-0.8B (Apache-2.0) names the sport and its objects from a frame, on CPU in 1–4 minutes. Its names keep decoys (bags, chairs) out. It sometimes repeats itself.
+- **`fixtures/candidates.py`**: every instance of each name (Grounding DINO, then a SAM 2.1 mask). Objects standing on the floor get a footprint from the mask's bottom line (RANSAC) on the floor. Objects hanging in the air (a mask whose lowest scene points are over 0.5 m up) are placed from the scene's MoGe points instead: the basketball rim comes out 2.78–3.19 m high (rim 3.05 m), the backboard 2.99–4.05 m.
+- **`fixtures/signals.py`**: six signals from the people and ball over the whole video, each against the same object dropped at 300 random spots in the play area:
+  - contacts: ball contacts at it
+  - crossed: the ball crossing its line
+  - sides: people staying on either side of it (a net)
+  - guarded: one person staying in one spot near it (a keeper)
+  - aimed: the ball heading for it
+  - reached: separate ball visits level with it (a hoop)
+- **Strictness** from 0 to 1 sets how near counts, how much of a signal is needed and what share of random spots it must beat. An object's strength is the highest strictness at which any one signal passes.
+
+| Clip | Kept, with strength | Highest of the rest |
+|---|---|---|
+| Pickleball | net 0.9 (sides) | none |
+| Soccer | pop-up goal 0.8 (guarded) | none; with hand-picked decoys, bags beside the keeper 0.7 |
+| Basketball | hoop and rim 0.8 (reached) | a tree 0.2 |
+
+Strictness 0.8 keeps exactly the right objects on all three. Known issues: "aimed" never fires for close shots (slow across the floor), and the counts are thin on short clips (two shots on basketball).
+
+`fixtures/peek_boxes.py` draws Grounding DINO's boxes for some names on one image.
 
 ## Setting: good enough
 

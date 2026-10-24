@@ -1,8 +1,9 @@
 """The ball's path in 3D from one camera: link its detections, size it from the floor and hands, place it by size,
 anchor it at hands, and keep its motion consistent over time with gravity.
 
-1. Link: the best path through each frame's candidates (detections.jsonl), as a longest path in a graph where an edge
-   from one frame's candidate to a later one costs its missed frames and any speed beyond MAX_SPEED.
+1. Link: every ball is followed while it's clearly the same one (tracklets). The ball in play is the one people play
+   with: the chain of tracklets, each reachable from the last at a ball's top speed, with the most detections near
+   people. Static spots (the Moon, a logo) are dropped first.
 2. Size: if a ball sat on the floor, its depth is where its ray meets the plane one radius up; that implies a diameter
    from its pixel size. A ball in the air implies a bigger one (its ray meets the floor farther away), so the true
    diameter is a low percentile of them. Nothing about the sport is assumed.
@@ -23,14 +24,22 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 WORK, DET, OUT = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 OUT.mkdir(parents=True, exist_ok=True)
 MIN_SCORE = 0.15  # candidates
-MAX_SPEED = 70.0  # px per frame before a jump costs
-MISS_COST = 0.4  # per missed frame in a link
-MAX_GAP = 15  # frames a link may skip
-MIN_TRACKLET_VALUE = 4.0  # a stretch must be worth about three confident detections
+MAX_SPEED = 70.0  # px per frame: how far a new tracklet's second detection may be from its first
+MAX_MISS = 3  # frames a tracklet may go undetected before it ends
+MAX_SIZE_RATIO = 2.0  # between consecutive detections in a tracklet
+MAX_BALL_SPEED = 40.0  # m/s, generous for a ball in play: tracklets farther apart than it can fly don't chain
+DEPTH_TOL = 0.3  # relative: depth from size is this loose when chaining
+NEAR_BODY = 0.5  # body heights, in the image: a ball this close to a keypoint (and at a similar depth) is near the person
+NEAR_DEPTH = 0.5  # relative depth difference for that
+UNTOUCHED = 0.2  # share of a detection's score a moving ball far from everyone is worth (in flight, rolling away)
+MOVING = 2.0  # ball sizes: a tracklet that spans fewer is resting
+CONTINUE_GAP = 10  # frames: a tracklet nobody touches only chains on this close to the ball in play
+HOP_COST = 2.0  # per (speed / MAX_BALL_SPEED)² of the flight between chained tracklets: fast hops must pay off
 STATIC_PX, STATIC_SHARE = 4.0, 0.05  # a candidate this close to the same spot in this share of frames is background
 ACC_SCALE = 5.0  # m/s², acceleration beyond gravity where the smoothing penalty turns linear (contacts break through)
 CONTACT_ACC = 30.0  # m/s² beyond gravity: a contact (bounce, hit, catch)
@@ -47,7 +56,10 @@ W_MOTION = 1.0
 G = np.array([0.0, -9.81, 0.0])
 
 cam = json.loads((WORK / "bodies" / "camera.json").read_text())
-fps = json.loads((WORK / "ingest" / "meta.json").read_text())["fps"]
+meta = json.loads((WORK / "ingest" / "meta.json").read_text())
+fps = meta["fps"]
+# Pixel constants were set on 1080p video; scale them to this video's width
+MAX_SPEED, STATIC_PX, PIXEL_SIGMA = (v * meta["width"] / 1920 for v in (MAX_SPEED, STATIC_PX, PIXEL_SIGMA))
 M = np.array(json.loads((WORK / "floor" / "floor.json").read_text())["camera_to_world"])
 R_cw, t_cw = M[:3, :3], M[:3, 3]
 frames_dir = sorted((WORK / "ingest" / "frames").glob("*.jpg"))
@@ -72,56 +84,137 @@ for c in all_centers:
             static.append(c)
 for f in det:
     det[f] = [b for b in det[f] if all(np.linalg.norm(center(b) - s) > STATIC_PX for s in static)]
-print(f"static spots dropped: {[tuple(np.round(s).astype(int)) for s in static]}", flush=True)
-nodes = [(f, b) for f in sorted(det) for b in det[f]]
-def best_path(allowed):
-    """The best-scoring linked path through the allowed nodes: (value, node indices)."""
-    best = np.full(len(nodes), -np.inf)
-    back = np.full(len(nodes), -1)
-    for k, (f, b) in enumerate(nodes):
-        if not allowed[k]:
+print(f"static spots dropped: {[tuple(int(v) for v in np.round(s)) for s in static]}", flush=True)
+
+
+def box_size(b):
+    """The box's short side: motion blur stretches the long one."""
+    return min(b["box"][2] - b["box"][0], b["box"][3] - b["box"][1])
+
+
+# Then follow every ball while it's clearly the same one: tracklets, each frame's candidates matched (Hungarian) to
+# where each live tracklet should be by now. A kick or a long occlusion ends a tracklet.
+tracklets, live = [], []
+for f in sorted(det):
+    live = [t for t in live if f - t["frames"][-1] <= MAX_MISS + 1]
+    cost = np.full((len(live), len(det[f])), np.inf)
+    for i, t in enumerate(live):
+        gap = f - t["frames"][-1]
+        last, last_size = center(t["boxes"][-1]), box_size(t["boxes"][-1])
+        if len(t["frames"]) > 1:
+            v = (last - center(t["boxes"][-2])) / (t["frames"][-1] - t["frames"][-2])
+            expect, radius = last + v * gap, (3 * last_size + 0.5 * np.linalg.norm(v)) * np.sqrt(gap) + PIXEL_SIGMA * 2
+        else:
+            expect, radius = last, MAX_SPEED * gap
+        for j, b in enumerate(det[f]):
+            off = np.linalg.norm(center(b) - expect)
+            if off < radius and 1 / MAX_SIZE_RATIO < max(box_size(b), 1) / max(last_size, 1) < MAX_SIZE_RATIO:
+                cost[i, j] = off / radius
+    taken = set()
+    if np.isfinite(cost).any():
+        for i, j in zip(*linear_sum_assignment(np.where(np.isfinite(cost), cost, 1e9))):
+            if np.isfinite(cost[i, j]):
+                live[i]["frames"].append(f)
+                live[i]["boxes"].append(det[f][j])
+                taken.add(j)
+    for j, b in enumerate(det[f]):
+        if j not in taken:
+            tracklets.append({"frames": [f], "boxes": [b]})
+            live.append(tracklets[-1])
+tracklets = [t for t in tracklets if len(t["frames"]) >= 3]
+
+# Depth from size needs a diameter: a provisional one, step 2's floor estimate over all tracklets
+f_px = (cam["fx"] + cam["fy"]) / 2
+t_uv = np.array([center(b) for t in tracklets for b in t["boxes"]])
+t_size = np.array([box_size(b) for t in tracklets for b in t["boxes"]])
+t_along = np.column_stack([(t_uv[:, 0] - cam["cx"]) / cam["fx"], (t_uv[:, 1] - cam["cy"]) / cam["fy"], np.ones(len(t_uv))]) @ R_cw[1]
+with np.errstate(divide="ignore", invalid="ignore"):
+    d_link = 0.1
+    for _ in range(10):
+        z = (d_link / 2 - t_cw[1]) / t_along
+        implied = t_size * np.where(z > 0, z, np.inf) / f_px
+        d_link = float(np.percentile(implied[np.isfinite(implied)], SIZE_PERCENTILE))
+print(f"{len(tracklets)} tracklets; provisional diameter for linking: {d_link * 100:.1f} cm", flush=True)
+
+# The ball in play is the one the people play with (the hierarchy: people anchor the ball). A tracklet is worth the
+# scores of its detections that are near someone: within half a body height of any of their keypoints in the image,
+# at a similar depth. A moving ball's other detections are worth a little (in flight between players, or rolling
+# away after a point), but only as a continuation of the ball in play; balls resting by the side or in the sky are
+# worth nothing.
+with np.load(WORK / "check" / "bodies.npz") as b:
+    body_frame, body_kp = b["frame"], b["keypoints"].astype(np.float64)
+kp_cam = (body_kp - t_cw) @ R_cw
+kp_uv = np.stack([cam["fx"] * kp_cam[..., 0] / kp_cam[..., 2] + cam["cx"], cam["fy"] * kp_cam[..., 1] / kp_cam[..., 2] + cam["cy"]], -1)
+body_height = np.ptp(kp_uv[..., 1], axis=1)
+body_depth = np.median(kp_cam[..., 2], axis=1)
+for t in tracklets:
+    uv = np.array([center(b) for b in t["boxes"]])
+    moving = np.ptp(uv, axis=0).max() > MOVING * np.median([box_size(b) for b in t["boxes"]])
+    t["value"], t["touched"], t["values"] = 0.0, False, []
+    for f, b in zip(t["frames"], t["boxes"]):
+        m = body_frame == f
+        z = f_px * d_link / max(box_size(b), 1)
+        off = np.linalg.norm(kp_uv[m] - center(b), axis=-1).min(1) / body_height[m]
+        near = bool(((off < NEAR_BODY) & (np.abs(body_depth[m] - z) < NEAR_DEPTH * z)).any())
+        t["values"].append(b["score"] * (1.0 if near else UNTOUCHED * moving))
+        t["touched"] |= near
+    t["values"] = np.array(t["values"])
+    t["value"] = float(t["values"].sum())
+
+
+def end_point(t, i):
+    """Where tracklet t is at its i-th detection, in camera coordinates, as a start (i >= 0: the depth from the median
+    size of the few detections from there on) or its end (i = -1: of the last few). One box's size is noisy."""
+    boxes = t["boxes"][i : i + 5] if i >= 0 else t["boxes"][-5:]
+    z = f_px * d_link / max(float(np.median([box_size(b) for b in boxes])), 1)
+    u, v = center(t["boxes"][i])
+    return np.array([(u - cam["cx"]) / cam["fx"] * z, (v - cam["cy"]) / cam["fy"] * z, z])
+
+
+def hop(a, b, i):
+    """The cost of the ball flying from the end of tracklet a to b's i-th detection (depth loosely), or None if it
+    can't in time or an untouched tracklet doesn't continue the other closely enough."""
+    if not (a["touched"] and b["touched"]) and b["frames"][i] - a["frames"][-1] > CONTINUE_GAP:
+        return None
+    gap = (b["frames"][i] - a["frames"][-1]) / fps
+    p, q = end_point(a, -1), end_point(b, i)
+    across = np.linalg.norm(q[:2] / q[2] - p[:2] / p[2]) * min(p[2], q[2])
+    along = max(0.0, abs(q[2] - p[2]) - DEPTH_TOL * max(p[2], q[2]))
+    speed = max(0.0, np.hypot(across, along) - 1.0) / gap
+    return HOP_COST * (speed / MAX_BALL_SPEED) ** 2 if speed <= MAX_BALL_SPEED else None
+
+
+# One ball in play: the chain of tracklets worth the most after the hops' costs, each reachable from the last. Where
+# two overlap (the tracker followed both for a while), the later one counts from where the earlier one ends. Frames
+# between them stay unseen for step 4 to fill; it never pays to hop through balls nobody plays with.
+chainable = sorted((t for t in tracklets if t["value"] > 0), key=lambda t: t["frames"][-1])
+best = [t["value"] if t["touched"] else -np.inf for t in chainable]  # the chain starts at the ball in play
+back, start = [-1] * len(chainable), [0] * len(chainable)
+for k, b in enumerate(chainable):
+    for j, a in enumerate(chainable[:k]):
+        i = int(np.searchsorted(b["frames"], a["frames"][-1], side="right"))  # b's first detection after a ends
+        if i == len(b["frames"]) or best[j] + b["values"][i:].sum() <= best[k]:
             continue
-        gain = np.log(b["score"] + 1e-6) + 1.5
-        best[k] = gain  # a path may start anywhere
-        for j in range(k - 1, -1, -1):
-            g, a = nodes[j]
-            if g == f or not allowed[j]:
-                continue
-            if f - g > MAX_GAP:
-                break
-            speed = np.linalg.norm(center(b) - center(a)) / (f - g)
-            value = best[j] + gain - MISS_COST * (f - g - 1) - 0.1 * max(0.0, speed - MAX_SPEED)
-            if value > best[k]:
-                best[k], back[k] = value, j
-    k = int(np.argmax(best))
-    path = []
-    while k >= 0:
-        path.append(k)
-        k = back[k]
-    return best[path[0]], path[::-1]
-
-
-# One ball, seen in stretches: take the best path, then the best one in the frames it doesn't cover, and so on
-allowed = np.ones(len(nodes), bool)
-track, tracklets = {}, []
-while allowed.any():
-    value, path = best_path(allowed)
-    if value < MIN_TRACKLET_VALUE:
-        break
-    f0, f1 = nodes[path[0]][0], nodes[path[-1]][0]
-    tracklets.append((f0, f1, len(path)))
-    for k in path:
-        track[nodes[k][0]] = nodes[k][1]
-    allowed &= ~np.array([f0 <= f <= f1 for f, _ in nodes])
+        cost = hop(a, b, i)
+        if cost is not None and best[j] + b["values"][i:].sum() - cost > best[k]:
+            best[k], back[k], start[k] = best[j] + b["values"][i:].sum() - cost, j, i
+k, chain = int(np.argmax(best)), []
+while k >= 0:
+    t = chainable[k]
+    chain.append({"frames": t["frames"][start[k] :], "boxes": t["boxes"][start[k] :], "value": t["values"][start[k] :].sum()})
+    k = back[k]
+chain = chain[::-1]
+track = {}
+for t in chain:
+    track |= {f: b for f, b in zip(t["frames"], t["boxes"]) if f not in track}
 frames = np.array(sorted(track))
-print(f"linked: {len(frames)} detections in {len(tracklets)} tracklets over frames {frames[0]}..{frames[-1]}: "
-      f"{sorted(tracklets)}", flush=True)
+print(f"linked: {len(frames)} detections in {len(chain)} tracklets over frames {frames[0]}..{frames[-1]}: "
+      f"{[(t['frames'][0], t['frames'][-1], len(t['frames']), round(float(t['value']), 1)) for t in chain]}", flush=True)
 
 # Rays (camera and world) and pixel sizes
 uv = np.array([center(track[f]) for f in frames])
 size = np.array([min(track[f]["box"][2] - track[f]["box"][0], track[f]["box"][3] - track[f]["box"][1]) for f in frames])
 rays = np.column_stack([(uv[:, 0] - cam["cx"]) / cam["fx"], (uv[:, 1] - cam["cy"]) / cam["fy"], np.ones(len(uv))])  # z = 1
-f_px = (cam["fx"] + cam["fy"]) / 2
 
 
 def depth_on_plane(height):
@@ -304,7 +397,7 @@ summary = dict(diameter_m=round(diameter, 4), detections=len(frames), first=int(
                bounces=bounces, hits={str(k): v for k, v in hits.items()}, contacts_in_air=others, height_max=round(float(pos[:, 1].max()), 2),
                speed_max=round(float(np.linalg.norm(np.diff(pos, axis=0), axis=1).max() * fps), 1),
                kinds={k: int((kinds == k).sum()) for k in set(kinds)})
-(OUT / "ball.json").write_text(json.dumps(dict(summary=summary, frames=span.tolist(), position=np.round(pos, 4).tolist(), kind=kinds.tolist()), indent=0))
+(OUT / "ball.json").write_text(json.dumps(dict(summary=summary, frames=span.tolist(), position=np.round(pos, 4).tolist(), kind=kinds.tolist(), linked={int(f): [round(float(v), 1) for v in (*center(track[f]), min(track[f]["box"][2] - track[f]["box"][0], track[f]["box"][3] - track[f]["box"][1]))] for f in frames}), indent=0))
 print(json.dumps(summary), flush=True)
 
 # Debug video: detection (green), the 3D path reprojected (red, at its size), kind

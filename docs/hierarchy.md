@@ -31,7 +31,7 @@ Stages talk through files in the work folder, one subfolder each, as now. New st
 | 4 (first half) | `background` *new, split from `scene`* | track, ingest | `background.jpg`, the video with people removed |
 | 2 | `held` *new* | bodies, smooth, track, ingest | per person: object mesh (own frame), colors, pose per frame (world), confidence per frame, `masks.npz` |
 | 2 | `ball` *new* | ingest, bodies, floor, held | path per frame (world), kind per frame (seen, hand, unseen, bounce, hit, contact), diameter, confidence |
-| 3 | `fixtures` *new* | background, floor, camera | per object: mesh (an upright plane on the floor for thin objects), RGBA texture, mask, see-through flag |
+| 3 | `fixtures` *new* | background, floor, camera, bodies, ball | per object: mesh (an upright plane on the floor for thin objects), RGBA texture, mask, see-through flag |
 | 4 | `scene` *changed* | background, fixtures, floor, bodies | graphics removed, fixtures filled from behind, MoGe-2 mesh with walls and ceiling snapped to fitted planes |
 | all | `export` *changed* | everything | one GLB: bodies, held objects, ball, fixtures, scene |
 | all | `refine` *new, later* | everything | a consistency report; corrections fed back to the stages above |
@@ -56,7 +56,11 @@ Bodies set the world: the camera, the floor frame (y up, floor at y = 0) and the
 
 **`ball`**: one small object in flight.
 1. RF-DETR's "sports ball" class on full-resolution tiles, every frame.
-2. Link detections into tracklets and drop spots that never move (logos, graphics).
+2. Find the ball in play:
+   - Drop spots that never move (logos, graphics, the Moon).
+   - Follow every ball in short tracklets.
+   - Chain the tracklets that people play with: detections near someone's body count fully; a moving ball far from everyone counts a little, and only directly continuing the chain. Each hop between tracklets must be possible at a ball's top speed and costs more the faster it is.
+   - Balls resting on the next field, or another game's ball, never join. On the soccer clip, the top speed went from 67 m/s (one best path through all detections) to 16 m/s.
 3. Size: self-calibrated from the floor and from frames at a hand, never from a known diameter.
 4. One smoothing fit of the whole path: image positions, depth from size, gravity, and the floor as a lower bound.
 5. Label contacts: bounces at the floor, hits where a `held` object is within reach, hand contacts.
@@ -64,10 +68,17 @@ Bodies set the world: the camera, the floor frame (y up, floor at y = 0) and the
 ### Layer 3: pertinent objects
 
 **`fixtures`**:
-1. Grounding DINO by name on the background image, then a SAM 2.1 mask.
-2. Thin objects become an upright plane on the floor line under the mask, with height from its top edge.
-3. Texture by matting against what's behind it.
-4. See-through objects (netting, fences) keep their alpha.
+1. Grounding DINO by name on the background image, then a SAM 2.1 mask, for every instance of the name.
+   Names come from the command line, or from a small vision-language model (Qwen3.5-0.8B, Apache-2.0) that names the sport and its objects from a frame.
+2. Place each instance: on the floor under the mask's bottom line, or, for objects hanging in the air (a hoop), from the scene's points inside the mask.
+3. Keep only the instances the play clearly uses, judged by the layers above over the whole video, each signal against the same object at random spots in the play area:
+   - **Touched**: the ball's contacts at it, and separate visits of the ball level with it (a hoop).
+   - **Organizing**: play is arranged around it even untouched. The ball crosses it again and again while people stay on their own side (a net), or one person stays in one spot near it (a goal with a keeper).
+   A `--strictness` from 0 to 1 (default 0.8) sets how near counts, how much is needed and how unusual it must be against random spots. Instances that fail stay in the setting as painted mesh, not separate objects. At 0.8, the pickleball net, the soccer pop-up goal and the basketball hoop are kept, and nothing else on those clips.
+   To explore: a taxonomy of the objects used across sports (targets, dividers, boundaries played off, apparatus, markers), to find the cases these signals miss.
+4. Thin objects become an upright plane on the floor line under the mask, with height from its top edge.
+5. Texture by matting against what's behind it.
+6. See-through objects (netting, fences) keep their alpha.
 
 A net costs under a minute on CPU.
 

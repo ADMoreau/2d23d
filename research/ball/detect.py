@@ -6,6 +6,7 @@ Writes detections.jsonl: one line per frame, {"frame", "balls": [{"box", "score"
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,7 +17,7 @@ import torch
 
 WORK, OUT = Path(sys.argv[1]), Path(sys.argv[2])
 OUT.mkdir(parents=True, exist_ok=True)
-torch.set_num_threads(3)
+torch.set_num_threads(int(os.environ.get("THREADS", 3)))
 BALL = 37  # COCO "sports ball" in RF-DETR's output (1-based ids)
 TILE, OVERLAP = 640, 64
 MIN_SCORE = 0.05
