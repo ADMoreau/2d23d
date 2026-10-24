@@ -10,9 +10,12 @@ Output:
   in meters in camera coordinates (x right, y down, z forward, as in OpenCV), the shared mesh faces (F, 3),
   and the MHR parameters behind each body (mhr_*)
 - debug.mp4 with each body's mesh drawn over the frames
+On a CPU this stage takes hours, so it saves its bodies every CHUNK frames in the work folder's bodies.partial,
+and a rerun after a crash picks up from there. The folder goes once the stage is done.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import logging
@@ -42,6 +45,7 @@ SAM_3D_BODY = ("facebookresearch/sam-3d-body", "b5c765a0d89d789985e186d396315e75
 MOGE = ("microsoft/MoGe", "74fbce054ebed49800de42d0ad0e83495065719a", "moge")
 BODY_WEIGHTS = "facebook/sam-3d-body-vith"  # as accurate as the DINOv3 version, smaller, and one license
 FOV_FRAMES = 5  # the camera doesn't move, so a few frames are enough for its field of view
+CHUNK = 50  # frames per saved piece of a run in progress
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "2d23d"
 PARAMS = {  # saved name: SAM 3D Body output
     "global_rot": "global_rot",
@@ -72,27 +76,54 @@ def run(ctx: Context, out: Path) -> None:
     for row in tracks:
         if row["frame"] % ctx.settings.body_every == 0:
             by_frame[row["frame"]].append(row)
-    found = defaultdict(list)
-    start = time.perf_counter()
-    for done, i in enumerate(sorted(by_frame)):
-        if done and done % 50 == 0:  # on a CPU this stage takes hours, so say how it's going
-            left = (time.perf_counter() - start) / done * (len(by_frame) - done)
-            log.info("bodies: %d of %d frames done, about %d min left", done, len(by_frame), left / 60)
-        rgb = cv2.cvtColor(read_frame(ctx.work, i), cv2.COLOR_BGR2RGB)
-        mhr = infer(estimator, rgb, np.array([row["box"] for row in by_frame[i]], np.float32), K, ctx.device)
-        cam_t = mhr["pred_cam_t"][:, None, :]
-        found["frame"] += [i] * len(by_frame[i])
-        found["track_id"] += [row["track_id"] for row in by_frame[i]]
-        found["vertices"].append((mhr["pred_vertices"] + cam_t).astype(np.float16))
-        found["keypoints"].append((mhr["pred_keypoints_3d"] + cam_t).astype(np.float32))
-        for name, key in PARAMS.items():
-            found[f"mhr_{name}"].append(mhr[key].astype(np.float32))
-    arrays = {key: np.concatenate(value) if key not in ("frame", "track_id") else np.array(value, np.int32) for key, value in found.items()}
+    partial = resume_folder(ctx)
+    frames = sorted(by_frame)
+    pieces = []
+    start, fresh = time.perf_counter(), 0
+    for c in range(0, len(frames), CHUNK):
+        path = partial / f"{c:06d}.npz"
+        if path.exists():
+            with np.load(path) as f:
+                pieces.append(dict(f))
+            continue
+        found = defaultdict(list)
+        for i in frames[c : c + CHUNK]:
+            rgb = cv2.cvtColor(read_frame(ctx.work, i), cv2.COLOR_BGR2RGB)
+            mhr = infer(estimator, rgb, np.array([row["box"] for row in by_frame[i]], np.float32), K, ctx.device)
+            cam_t = mhr["pred_cam_t"][:, None, :]
+            found["frame"] += [i] * len(by_frame[i])
+            found["track_id"] += [row["track_id"] for row in by_frame[i]]
+            found["vertices"].append((mhr["pred_vertices"] + cam_t).astype(np.float16))
+            found["keypoints"].append((mhr["pred_keypoints_3d"] + cam_t).astype(np.float32))
+            for name, key in PARAMS.items():
+                found[f"mhr_{name}"].append(mhr[key].astype(np.float32))
+        piece = {key: np.concatenate(value) if key not in ("frame", "track_id") else np.array(value, np.int32) for key, value in found.items()}
+        np.savez(path.with_suffix(".tmp.npz"), **piece)
+        path.with_suffix(".tmp.npz").rename(path)  # whole pieces only
+        pieces.append(piece)
+        fresh += len(frames[c : c + CHUNK])
+        done = min(c + CHUNK, len(frames))
+        left = (time.perf_counter() - start) / fresh * (len(frames) - done)  # on a CPU this stage takes hours
+        log.info("bodies: %d of %d frames done, about %d min left", done, len(frames), left / 60)
+    pieces = [piece for piece in pieces if len(piece)]
+    arrays = {key: np.concatenate([piece[key] for piece in pieces]) for key in pieces[0]} if pieces else {}
     if not arrays:  # nobody tracked
         arrays = {"frame": np.zeros(0, np.int32), "track_id": np.zeros(0, np.int32), "vertices": np.zeros((0, 0, 3), np.float16), "keypoints": np.zeros((0, 70, 3), np.float32)}
     np.savez_compressed(out / "bodies.npz", faces=estimator.faces.astype(np.int32), **arrays)
+    shutil.rmtree(partial)
     log.info("bodies: %d bodies in %d frames", len(arrays["frame"]), len(by_frame))
     write_debug_video(ctx.work, out, "bodies", draw_bodies(arrays["frame"], arrays["track_id"], arrays["vertices"], K))
+
+
+def resume_folder(ctx: Context) -> Path:
+    """The folder for a run in progress, emptied if it was for other tracks or settings."""
+    partial = ctx.work / "bodies.partial"
+    key = hashlib.sha256((ctx.work / "track" / "tracks.json").read_bytes() + repr(ctx.settings).encode()).hexdigest()
+    if (partial / "key").exists() and (partial / "key").read_text() != key:
+        shutil.rmtree(partial)
+    partial.mkdir(exist_ok=True)
+    (partial / "key").write_text(key)
+    return partial
 
 
 def fetch_code(repo: str, commit: str, package: str) -> Path:
